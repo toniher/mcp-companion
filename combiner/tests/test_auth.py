@@ -1,4 +1,4 @@
-"""Tests for mcp-bridge authentication module."""
+"""Tests for mcp-combiner authentication module."""
 
 from __future__ import annotations
 
@@ -8,18 +8,17 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
-from mcp_bridge.auth import (
+from mcp_combiner.auth import (
     _NETWORK_ERROR_GRACE_SECONDS,
     _REFRESH_MARGIN_SECONDS,
     _WAKE_GAP_SECONDS,
+    _BearerAuth,
+    _is_network_error,
     _ProbeOutcome,
     _RefreshOutcome,
-    _is_network_error,
-    _BearerAuth,
     build_auth,
     create_encrypted_store,
 )
-
 
 # ── create_encrypted_store ─────────────────────────────────────────
 
@@ -71,8 +70,8 @@ class TestEncryptedStore:
     def test_derives_encryption_key_from_machine_id(self, tmp_path: Path) -> None:
         """Encryption key is derived deterministically from machine ID + username."""
         # Create two stores - they should use the same derived key
-        store1 = create_encrypted_store(tmp_path / "srv1")
-        store2 = create_encrypted_store(tmp_path / "srv2")
+        create_encrypted_store(tmp_path / "srv1")
+        create_encrypted_store(tmp_path / "srv2")
         # No .key file should be created (key is derived, not stored)
         key_file = tmp_path / ".key"
         assert not key_file.exists()
@@ -168,7 +167,7 @@ class TestBuildAuth:
 
     def test_oauth_uses_encrypted_storage(self, tmp_path: Path) -> None:
         """OAuth provider is configured with encrypted storage at the right path."""
-        result = build_auth(
+        build_auth(
             "srv",
             auth_config="oauth",
             server_url="http://example.com/mcp",
@@ -254,7 +253,7 @@ class TestProactiveRefreshNetworkHandling:
 
     def _make_oauth(self, tmp_path: Path):
         """Build a minimal _RefreshTokenOAuth bound to a fake server URL."""
-        from mcp_bridge.auth import _build_oauth
+        from mcp_combiner.auth import _build_oauth
 
         return _build_oauth(
             server_name="test-srv",
@@ -381,7 +380,7 @@ class TestPreflightRefresh:
     """
 
     def _make_oauth(self, tmp_path: Path):
-        from mcp_bridge.auth import _build_oauth
+        from mcp_combiner.auth import _build_oauth
 
         return _build_oauth(
             server_name="test-srv",
@@ -462,7 +461,7 @@ class TestPreflightRefresh:
     async def test_first_request_forces_refresh(self, tmp_path: Path) -> None:
         """A first-ever request (no prior heartbeat) treats as wake-up.
 
-        Reason: the on-disk expiry could be stale — a previous bridge-process
+        Reason: the on-disk expiry could be stale — a previous combiner-process
         session might have applied a synthetic grace window, or the token
         might have been revoked externally.  A single refresh on first use
         is the only way to know the persisted expiry reflects reality.
@@ -484,7 +483,7 @@ class TestPreflightRefresh:
     async def test_network_error_applies_grace_window(self, tmp_path: Path) -> None:
         """NETWORK_ERROR from refresh extends in-memory expiry but does NOT persist.
 
-        Grace is bridge-process-scoped — persisting it would propagate the
+        Grace is combiner-process-scoped — persisting it would propagate the
         synthetic value across restarts and trick a future ``_initialize`` into
         trusting an expiry the access token doesn't actually have at the
         OAuth provider.
@@ -586,7 +585,7 @@ class TestPreflightRefresh:
         """When the existing expiry IS within (or before) the grace window, extend it.
 
         The synthetic value is in-memory only — must not be persisted to
-        disk (otherwise the lie would survive a bridge restart).
+        disk (otherwise the lie would survive a combiner restart).
         """
         import time
 
@@ -612,13 +611,13 @@ class TestUpstream401Suppression:
 
     When workspace_mcp (or any other downstream MCP server validating tokens
     against a network-reachable provider) returns 401 because its validator
-    can't reach Google, the bridge must propagate the 401 to its caller
+    can't reach Google, the combiner must propagate the 401 to its caller
     rather than entering the SDK's inline full-OAuth path.  Real credential
     failures recover via :MCPToggleServer.
     """
 
     def _make_oauth(self, tmp_path: Path):
-        from mcp_bridge.auth import _build_oauth
+        from mcp_combiner.auth import _build_oauth
 
         return _build_oauth(
             server_name="test-srv",
@@ -1094,7 +1093,6 @@ class TestUpstream401Suppression:
         self, tmp_path: Path
     ) -> None:
         """Multi-AS PRM with both same-host and external entries → external wins."""
-        from urllib.parse import urlparse
 
         oauth = self._make_oauth(tmp_path)
         self._seed_valid_tokens(oauth)
@@ -1164,6 +1162,7 @@ class TestUpstream401Suppression:
     async def test_non_401_lets_sdk_flow_complete(self, tmp_path: Path) -> None:
         """A 200 (or other non-401) must allow the SDK flow to finish normally."""
         import time
+
         import fastmcp.client.auth.oauth as fastmcp_oauth_mod
 
         oauth = self._make_oauth(tmp_path)

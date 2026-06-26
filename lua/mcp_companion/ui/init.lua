@@ -1,5 +1,5 @@
 --- mcp-companion.nvim — Status UI
---- Single floating window with bridge status, servers, tools/resources/prompts, logs
+--- Single floating window with combiner status, servers, tools/resources/prompts, logs
 --- @module mcp_companion.ui
 
 local M = {}
@@ -36,8 +36,8 @@ local icons = {
   expand = "▸",
   collapse = "▾",
   separator = "─",
-  bridge_on = "⬢",
-  bridge_off = "⬡",
+  combiner_on = "⬢",
+  combiner_off = "⬡",
 }
 
 --- @param status string
@@ -117,15 +117,15 @@ local function add_separator(width)
   add_line(string.rep(icons.separator, width or 50), "Comment")
 end
 
---- Render bridge status section
+--- Render combiner status section
 --- @param state table
-local function render_bridge(state)
-  local b = state.bridge or {}
+local function render_combiner(state)
+  local b = state.combiner or {}
   local icon, hl = status_icon(b.status or "disconnected")
 
   add_segments({
     { " " .. icon .. " ", hl },
-    { "Bridge: ", "Title" },
+    { "Combiner: ", "Title" },
     { b.status or "disconnected", hl },
   })
 
@@ -251,7 +251,7 @@ local function build_status_view(state)
       if cfg then
         local known = {}
         for _, srv in ipairs(state.servers or {}) do
-          if srv.name and srv.name ~= "_bridge" then
+          if srv.name and srv.name ~= "_combiner" then
             table.insert(known, srv.name)
           end
         end
@@ -262,7 +262,7 @@ local function build_status_view(state)
 
   -- Header
   add_line("")
-  render_bridge(state)
+  render_combiner(state)
   add_line("")
   add_separator()
 
@@ -280,17 +280,17 @@ local function build_status_view(state)
     add_separator()
   end
 
-  -- Bridge servers
+  -- Combiner servers
   local servers = state.servers or {}
   if #servers == 0 then
     add_line("")
     add_line("  (no servers connected)", "Comment")
   else
     add_line("")
-    add_line(" Bridge Servers", "Title")
+    add_line(" Combiner Servers", "Title")
     add_line("")
     for _, srv in ipairs(servers) do
-      if srv.name ~= "_bridge" then
+      if srv.name ~= "_combiner" then
         render_server(srv, session_disabled, project_disabled)
       end
     end
@@ -325,6 +325,10 @@ local function build_status_view(state)
     { " refresh  ", "Comment" },
     { "R", "Special" },
     { " restart  ", "Comment" },
+    { "x", "Special" },
+    { " restart-srv  ", "Comment" },
+    { "c", "Special" },
+    { " reload-cfg  ", "Comment" },
     { "l", "Special" },
     { " logs  ", "Comment" },
     { "<CR>", "Special" },
@@ -473,9 +477,27 @@ function M.open()
   end, "Refresh")
 
   map("R", function()
-    local bridge = require("mcp_companion.bridge")
-    bridge.restart()
-  end, "Restart bridge")
+    local combiner = require("mcp_companion.combiner")
+    combiner.restart()
+  end, "Restart combiner")
+
+  map("c", function()
+    local combiner_mod = require("mcp_companion.combiner")
+    local client = combiner_mod.client
+    if not client or not client.connected then
+      vim.notify("[mcp-companion] Combiner not connected", vim.log.levels.WARN)
+      return
+    end
+    vim.notify("[mcp-companion] Reloading combiner config...", vim.log.levels.INFO)
+    client:reload_config(function(err, result)
+      if err then
+        vim.notify(string.format("[mcp-companion] Reload failed: %s", tostring(err)), vim.log.levels.ERROR)
+      else
+        vim.notify(string.format("[mcp-companion] %s", result or "config reloaded"), vim.log.levels.INFO)
+        M._fetch_and_render()
+      end
+    end)
+  end, "Reload combiner config")
 
   map("l", function()
     _view = "logs"
@@ -511,10 +533,10 @@ function M.open()
       return
     end
     local srv_name = line_data.server_name
-    local bridge_mod = require("mcp_companion.bridge")
-    local client = bridge_mod.client
+    local combiner_mod = require("mcp_companion.combiner")
+    local client = combiner_mod.client
     if not client or not client.connected then
-      vim.notify("[mcp-companion] Bridge not connected", vim.log.levels.WARN)
+      vim.notify("[mcp-companion] Combiner not connected", vim.log.levels.WARN)
       return
     end
     -- Show feedback
@@ -536,18 +558,18 @@ function M.open()
       return
     end
     local srv_name = line_data.server_name
-    if srv_name == "_bridge" then return end
+    if srv_name == "_combiner" then return end
 
     local state = require("mcp_companion.state")
     local servers = state.field("servers") or {}
     local known = {}
     for _, srv in ipairs(servers) do
-      if srv.name and srv.name ~= "_bridge" then
+      if srv.name and srv.name ~= "_combiner" then
         table.insert(known, srv.name)
       end
     end
     if #known == 0 then
-      vim.notify("[mcp-companion] No connected servers — bridge state not loaded yet",
+      vim.notify("[mcp-companion] No connected servers — combiner state not loaded yet",
         vim.log.levels.WARN)
       return
     end
@@ -570,6 +592,31 @@ function M.open()
     M.render()
   end, "Toggle server in .mcp-companion.json")
 
+  map("x", function()
+    local cursor = vim.api.nvim_win_get_cursor(_win)
+    local line_idx = cursor[1]
+    local line_data = _lines[line_idx]
+    if not line_data or not line_data.server_name then
+      return
+    end
+    local srv_name = line_data.server_name
+    if srv_name == "_combiner" then return end
+    local combiner_mod = require("mcp_companion.combiner")
+    local client = combiner_mod.client
+    if not client or not client.connected then
+      vim.notify("[mcp-companion] Combiner not connected", vim.log.levels.WARN)
+      return
+    end
+    vim.notify(string.format("[mcp-companion] Restarting %s...", srv_name), vim.log.levels.INFO)
+    client:restart_server(srv_name, function(err, result)
+      if err then
+        vim.notify(string.format("[mcp-companion] Restart failed: %s", tostring(err)), vim.log.levels.ERROR)
+      else
+        vim.notify(string.format("[mcp-companion] %s", result or "done"), vim.log.levels.INFO)
+      end
+    end)
+  end, "Restart server under cursor")
+
   map("S", function()
     local cursor = vim.api.nvim_win_get_cursor(_win)
     local line_idx = cursor[1]
@@ -578,7 +625,7 @@ function M.open()
       return
     end
     local srv_name = line_data.server_name
-    if srv_name == "_bridge" then return end
+    if srv_name == "_combiner" then return end
 
     if not _source_bufnr then
       vim.notify(
@@ -644,11 +691,11 @@ function M.open()
     end,
   })
 
-  -- Fetch fresh session status from bridge before initial render
+  -- Fetch fresh session status from combiner before initial render
   M._fetch_and_render()
 end
 
---- Fetch session status from bridge and re-render.
+--- Fetch session status from combiner and re-render.
 --- Used on open and can be called to refresh.
 function M._fetch_and_render()
   -- Initial render with cached/empty state
