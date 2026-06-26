@@ -61,6 +61,40 @@ local function _normalize_parameters_schema(schema)
     return normalized
 end
 
+--- Make JSON-schema tables safe for vim.json.encode by preserving object-typed
+--- maps as JSON objects instead of ambiguous empty Lua arrays.
+---
+--- Empty Lua tables become `[]` when encoded unless they carry dict semantics.
+--- That is fine for JSON arrays but breaks strict function-schema validators
+--- (e.g. Copilot) when `properties` is encoded as `[]` instead of `{}`.
+---
+--- @param schema any
+--- @return any
+local function _preserve_schema_objects(schema)
+    if type(schema) ~= "table" then
+        return schema
+    end
+
+    if next(schema) == nil then
+        return vim.empty_dict()
+    end
+
+    local is_list = vim.islist and vim.islist(schema) or vim.tbl_islist(schema)
+    if is_list then
+        local out = {}
+        for i, item in ipairs(schema) do
+            out[i] = _preserve_schema_objects(item)
+        end
+        return out
+    end
+
+    local out = vim.empty_dict()
+    for key, value in pairs(schema) do
+        out[key] = _preserve_schema_objects(value)
+    end
+    return out
+end
+
 --- Build the cmds handler for a combiner tool.
 --- CC calls cmds[i](self, action, cmd_opts) where self is the CodeCompanion.Tools
 --- object (self.chat is the active CC chat). action is the parsed tool input from
@@ -256,8 +290,8 @@ function M.register()
             local captured_display = display
             local captured_namespaced = namespaced
             local captured_description = tool.description or ("MCP tool: " .. display)
-            local captured_input_schema = _normalize_parameters_schema(
-                tool.inputSchema
+            local captured_input_schema = _preserve_schema_objects(
+                _normalize_parameters_schema(tool.inputSchema)
             )
 
             server_tools[key] = {
@@ -385,7 +419,9 @@ function M.register_native()
             local key = tool._namespaced or (server.name .. "_" .. tool.name)
             local display = tool._display or tool.name
             local description = tool.description or ("Neovim tool: " .. display)
-            local input_schema = _normalize_parameters_schema(tool.inputSchema)
+            local input_schema = _preserve_schema_objects(
+                _normalize_parameters_schema(tool.inputSchema)
+            )
 
             server_tools[key] = {
                 description = description,
